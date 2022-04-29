@@ -1,10 +1,3 @@
-# Bevy Tutorial Template
+# Bevy Particle System Tutorial 
 
-A simple template to base [Bevy](https://bevyengine.org/) tutorials from. Creates a window, adds common dependancies, and sets up debugging utils.
-
-# Usage
-
-```
-cargo install cargo-generate
-cargo generate --git https://github.com/mwbryant/logic_projects_bevy_template
-```
+A simple tutorial to create a particle system using [Bevy](https://bevyengine.org/). Follows the particle system tutorial by [LogicProjects On Youtube](https://www.youtube.com/channel/UC7v3YEDa603x_84PgCPytzA)

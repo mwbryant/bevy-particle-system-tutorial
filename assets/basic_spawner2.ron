@@ -1,0 +1,20 @@
+(
+    rate: 0.10, 
+    amount_per_burst: 1,
+    particle_lifetime: 0.5,
+    position_variance: 0.25,
+    particle_size: Some(ParticleSize (
+        start: 0.1,
+        end: 0.2,
+    )),
+    particle_velocity: Some(ParticleVelocity (
+        start: (0.8, 0.0),
+        end: (0.0, 0.0),
+    )),
+    particle_color: Some(ParticleColor (
+        start: Rgba(red: 0.0, green: 0.35, blue: 0.8, alpha: 1.0),
+        end: Rgba(red: 0.2, green: 0.2, blue: 0.0, alpha: 0.1),
+    )),
+)
+
+

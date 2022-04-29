@@ -4,21 +4,28 @@
 
 use bevy::{prelude::*, render::camera::ScalingMode, window::PresentMode};
 use bevy_inspector_egui::{WorldInspectorParams, WorldInspectorPlugin};
+use serde::Deserialize;
 
 pub const CLEAR: Color = Color::rgb(0.3, 0.3, 0.3);
 pub const HEIGHT: f32 = 900.0;
 pub const RESOLUTION: f32 = 16.0 / 9.0;
 
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, Deserialize)]
 pub struct ParticleSize {
     start: f32,
     end: f32,
 }
 
-#[derive(Component, Clone, Copy)]
+#[derive(Component, Clone, Copy, Deserialize)]
 pub struct ParticleVelocity {
     start: Vec2,
     end: Vec2,
+}
+
+#[derive(Component, Clone, Copy, Deserialize)]
+pub struct ParticleColor {
+    start: Color,
+    end: Color,
 }
 
 #[derive(Component)]
@@ -27,14 +34,17 @@ pub struct Particle {
 }
 
 #[derive(Component)]
+pub struct ParticleSpawnerTimer(Timer);
+
+#[derive(Component, Deserialize)]
 pub struct ParticleSpawner {
     rate: f32,
-    timer: Timer,
     amount_per_burst: usize,
     position_variance: f32,
     particle_lifetime: f32,
     particle_size: Option<ParticleSize>,
     particle_velocity: Option<ParticleVelocity>,
+    particle_color: Option<ParticleColor>,
 }
 
 fn main() {
@@ -58,8 +68,9 @@ fn main() {
         .add_system(toggle_inspector)
         .add_startup_system(spawn_particle_spawner)
         .add_system(update_particle_lifetime)
-        .add_system(update_particle_size)
-        .add_system(update_particle_position)
+        .add_system(update_particle_size.after(emit_particles))
+        .add_system(update_particle_position.after(emit_particles))
+        .add_system(update_particle_color.after(emit_particles))
         .add_system(emit_particles)
         .run();
 }
@@ -72,15 +83,23 @@ fn lerp_vec2(a: Vec2, b: Vec2, t: f32) -> Vec2 {
     a * (1.0 - t) + b * t
 }
 
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    Color::rgba(
+        lerp(a.r(), b.r(), t),
+        lerp(a.g(), b.g(), t),
+        lerp(a.b(), b.b(), t),
+        lerp(a.a(), b.a(), t),
+    )
+}
+
 fn update_particle_lifetime(
-    mut commands: Commands,
-    mut particles: Query<(Entity, &mut Particle)>,
+    mut particles: Query<(&mut Particle, &mut Visibility)>,
     time: Res<Time>,
 ) {
-    for (ent, mut particle) in particles.iter_mut() {
+    for (mut particle, mut visibility) in particles.iter_mut() {
         particle.lifetime.tick(time.delta());
         if particle.lifetime.finished() {
-            commands.entity(ent).despawn();
+            visibility.is_visible = false;
         }
     }
 }
@@ -88,6 +107,13 @@ fn update_particle_size(mut particles: Query<(&Particle, &ParticleSize, &mut Spr
     for (particle, size, mut sprite) in particles.iter_mut() {
         let size = lerp(size.start, size.end, particle.lifetime.percent());
         sprite.custom_size = Some(Vec2::splat(size));
+    }
+}
+
+fn update_particle_color(mut particles: Query<(&Particle, &ParticleColor, &mut Sprite)>) {
+    for (particle, color, mut sprite) in particles.iter_mut() {
+        let color = lerp_color(color.start, color.end, particle.lifetime.percent());
+        sprite.color = color;
     }
 }
 
@@ -101,72 +127,120 @@ fn update_particle_position(
     }
 }
 
+fn spawn_particle(commands: &mut Commands, spawner: &ParticleSpawner) -> Entity {
+    let particle = commands
+        .spawn()
+        .insert(Particle {
+            lifetime: Timer::from_seconds(spawner.particle_lifetime, false),
+        })
+        .id();
+
+    let mut sprite = SpriteBundle::default();
+    sprite.visibility.is_visible = false;
+    sprite.transform.translation = Vec3::new(
+        spawner.position_variance * (2.0 * rand::random::<f32>() - 1.0),
+        spawner.position_variance * (2.0 * rand::random::<f32>() - 1.0),
+        0.0,
+    );
+
+    if let Some(size) = spawner.particle_size {
+        sprite.sprite.custom_size = Some(Vec2::splat(size.start));
+        commands.entity(particle).insert(size);
+    }
+    if let Some(color) = spawner.particle_color {
+        sprite.sprite.color = color.start;
+        commands.entity(particle).insert(color);
+    }
+    if let Some(velocity) = spawner.particle_velocity {
+        commands.entity(particle).insert(velocity);
+    }
+    commands.entity(particle).insert_bundle(sprite);
+    particle
+}
+
 fn emit_particles(
-    mut commands: Commands,
-    mut spawners: Query<(Entity, &mut ParticleSpawner)>,
+    mut spawners: Query<(&Children, &ParticleSpawner, &mut ParticleSpawnerTimer)>,
+    mut particles: Query<(&mut Particle, &mut Visibility, &mut Transform)>,
     time: Res<Time>,
 ) {
-    for (ent, mut spawner) in spawners.iter_mut() {
-        spawner.timer.tick(time.delta());
-        if spawner.timer.just_finished() {
+    for (children, spawner, mut timer) in spawners.iter_mut() {
+        timer.0.tick(time.delta());
+        if timer.0.just_finished() {
             for _i in 0..spawner.amount_per_burst {
-                let particle = commands
-                    .spawn()
-                    .insert(Particle {
-                        lifetime: Timer::from_seconds(spawner.particle_lifetime, false),
-                    })
-                    .id();
-
-                let mut sprite = SpriteBundle::default();
-                sprite.transform.translation = Vec3::new(
-                    spawner.position_variance * (2.0 * rand::random::<f32>() - 1.0),
-                    spawner.position_variance * (2.0 * rand::random::<f32>() - 1.0),
-                    0.0,
-                );
-
-                if let Some(size) = spawner.particle_size {
-                    sprite.sprite.custom_size = Some(Vec2::splat(size.start));
-                    commands.entity(particle).insert(size);
+                for child in children.iter() {
+                    if let Ok((mut particle, mut visibility, mut transform)) =
+                        particles.get_mut(*child)
+                    {
+                        if !visibility.is_visible {
+                            particle.lifetime =
+                                Timer::from_seconds(spawner.particle_lifetime, false);
+                            visibility.is_visible = true;
+                            transform.translation = Vec3::new(
+                                spawner.position_variance * (2.0 * rand::random::<f32>() - 1.0),
+                                spawner.position_variance * (2.0 * rand::random::<f32>() - 1.0),
+                                0.0,
+                            );
+                            break;
+                        }
+                    }
                 }
-                if let Some(velocity) = spawner.particle_velocity {
-                    commands.entity(particle).insert(velocity);
-                }
-                commands.entity(particle).insert_bundle(sprite);
-                commands.entity(ent).add_child(particle);
             }
         }
     }
 }
 
 fn spawn_particle_spawner(mut commands: Commands) {
+    let ron_str = &std::fs::read_to_string("assets/basic_spawner.ron").unwrap();
+    let spawner =
+        ron::from_str::<ParticleSpawner>(ron_str).expect("Failed to load basic_spawner.ron");
+
+    let mut particles = Vec::new();
+    for _i in 0..((1.1 * spawner.particle_lifetime / spawner.rate).ceil() as usize
+        * spawner.amount_per_burst)
+    {
+        particles.push(spawn_particle(&mut commands, &spawner));
+    }
+
     commands
         .spawn_bundle(TransformBundle::default())
-        .insert(ParticleSpawner {
-            //rate: 0.5,
-            rate: 0.01,
-            timer: Timer::from_seconds(0.05, true),
-            amount_per_burst: 3,
-            position_variance: 5.0,
-            particle_lifetime: 2.5,
-            particle_size: Some(ParticleSize {
-                start: 20.0,
-                end: 1.0,
-            }),
-            particle_velocity: Some(ParticleVelocity {
-                start: Vec2::new(40.0, 200.0),
-                end: Vec2::new(80.0, 100.0),
-            }),
-        });
+        .insert(ParticleSpawnerTimer(Timer::from_seconds(
+            spawner.rate,
+            true,
+        )))
+        .insert(spawner)
+        .push_children(&particles);
+
+    let ron_str = &std::fs::read_to_string("assets/basic_spawner2.ron").unwrap();
+    let spawner =
+        ron::from_str::<ParticleSpawner>(ron_str).expect("Failed to load basic_spawner.ron");
+
+    let mut particles = Vec::new();
+    for _i in 0..((1.1 * spawner.particle_lifetime / spawner.rate).ceil() as usize
+        * spawner.amount_per_burst)
+    {
+        particles.push(spawn_particle(&mut commands, &spawner));
+    }
+
+    commands
+        .spawn_bundle(TransformBundle::from_transform(Transform::from_xyz(
+            1.0, 0.0, 0.0,
+        )))
+        .insert(ParticleSpawnerTimer(Timer::from_seconds(
+            spawner.rate,
+            true,
+        )))
+        .insert(spawner)
+        .push_children(&particles);
 }
 
 fn spawn_camera(mut commands: Commands) {
     let mut camera = OrthographicCameraBundle::new_2d();
 
-    camera.orthographic_projection.right = HEIGHT / 2.0 * RESOLUTION;
-    camera.orthographic_projection.left = -HEIGHT / 2.0 * RESOLUTION;
+    camera.orthographic_projection.right = 1.0 * RESOLUTION;
+    camera.orthographic_projection.left = -1.0 * RESOLUTION;
 
-    camera.orthographic_projection.top = HEIGHT / 2.0;
-    camera.orthographic_projection.bottom = -HEIGHT / 2.0;
+    camera.orthographic_projection.top = 1.0;
+    camera.orthographic_projection.bottom = -1.0;
 
     camera.orthographic_projection.scaling_mode = ScalingMode::None;
 
